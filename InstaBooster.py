@@ -11,6 +11,44 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+def human_delay(min_delay=1.0, max_delay=3.0, action_type="general"):
+    """
+    Create human-like delays with randomization and normalization
+    
+    Args:
+        min_delay: Minimum delay in seconds
+        max_delay: Maximum delay in seconds  
+        action_type: Type of action for context-aware delays
+    """
+    # Context-aware delay ranges
+    delay_ranges = {
+        "page_load": (2.0, 4.5),
+        "click": (0.8, 2.2),
+        "scroll": (1.2, 2.8),
+        "api_call": (0.5, 1.5),
+        "interaction": (1.5, 3.5),
+        "navigation": (2.5, 4.0),
+        "general": (min_delay, max_delay)
+    }
+    
+    # Get appropriate delay range
+    if action_type in delay_ranges:
+        min_delay, max_delay = delay_ranges[action_type]
+    
+    # Generate random delay with slight bias toward middle values (more human-like)
+    delay = random.uniform(min_delay, max_delay)
+    
+    # Add micro-variations (simulate human inconsistency)
+    micro_variation = random.uniform(-0.1, 0.1)
+    delay += micro_variation
+    
+    # Ensure minimum delay
+    delay = max(delay, 0.5)
+    
+    print(f"⏱️ Human delay: {delay:.2f}s ({action_type})")
+    time.sleep(delay)
+    return delay
+
 def detect_gender_free_api(profile_name):
     """
     Use free gender detection API with Greek context
@@ -61,8 +99,8 @@ def filter_female_users(usernames, max_to_check=10):
             print(f"  ⚪ {username} -> {gender}")
             
         checked += 1
-        # Be nice to the free API
-        time.sleep(0.5)
+        # Be nice to the free API with randomized delays
+        human_delay(action_type="api_call")
     
     print(f"\n📊 Results: Found {len(female_users)} female users out of {checked} checked")
     return female_users
@@ -162,8 +200,8 @@ def get_random_follower(driver, user=None, my_username=None):
             EC.element_to_be_clickable((By.XPATH, "//header//a[contains(@href, '/followers')]"))
         )
         driver.execute_script("arguments[0].click();", followers_link)
-        print("⏱️ Waiting 1.5 seconds after clicking followers link...")
-        time.sleep(1.5)
+        print("⏱️ Waiting after clicking followers link...")
+        human_delay(action_type="click")
     except Exception as e:
         print('Could not find or click the followers link.')
         return None
@@ -239,9 +277,11 @@ def get_random_follower(driver, user=None, my_username=None):
         successful_methods = []
         try:
             current_scroll = driver.execute_script('return arguments[0].scrollTop;', scroll_box)
-            driver.execute_script('arguments[0].scrollTop = arguments[0].scrollTop + 1000;', scroll_box)
-            print("⏱️ Waiting 1 seconds after scroll...")
-            time.sleep(1)
+            # Randomize scroll amount to appear more human
+            scroll_amount = random.randint(800, 1200)
+            driver.execute_script(f'arguments[0].scrollTop = arguments[0].scrollTop + {scroll_amount};', scroll_box)
+            print("⏱️ Waiting after scroll...")
+            human_delay(action_type="scroll")
             new_scroll = driver.execute_script('return arguments[0].scrollTop;', scroll_box)
             methods_tried.append("JS_SCROLL_BOX")
             if new_scroll > current_scroll:
@@ -277,6 +317,7 @@ def get_random_follower(driver, user=None, my_username=None):
             break
         if no_new_users_count > 5:
             print(f"No new users for {no_new_users_count} attempts, waiting longer...")
+            human_delay(min_delay=2.0, max_delay=4.0, action_type="general")
     import re
     username_regex = re.compile(r'^[A-Za-z0-9._]{1,30}$')
     forbidden = set([
@@ -321,13 +362,15 @@ def get_random_follower(driver, user=None, my_username=None):
 
 def check_private_and_act(driver, user):
     driver.get(f'https://www.instagram.com/{user}/')
-    print("⏱️ Waiting 2 seconds for profile page to load...")
-    time.sleep(2)
+    print("⏱️ Waiting for profile page to load...")
+    human_delay(action_type="page_load")
     
     # Check if account is private first
     try:
         private = driver.find_element(By.XPATH, "//*[contains(text(), 'This Account is Private')]")
         follow_button = driver.find_element(By.XPATH, "//button[text()='Follow']")
+        # Add human-like delay before clicking follow
+        human_delay(action_type="click")
         follow_button.click()
         print(f'Followed private user: {user}')
     except:
@@ -340,20 +383,24 @@ def check_private_and_act(driver, user):
                 if href and '/liked_by/' not in href and '/p/' in href:
                     valid_posts.append(post)
             if valid_posts:
+                # Add small delay before selecting post (human-like browsing behavior)
+                human_delay(min_delay=0.5, max_delay=1.5, action_type="general")
                 random_post = random.choice(valid_posts)
                 print(f"Selected random post: {random_post.get_attribute('href')}")
                 driver.get(random_post.get_attribute('href'))
-                print("⏱️ Waiting 3 seconds for post to load...")
-                time.sleep(3)
+                print("⏱️ Waiting for post to load...")
+                human_delay(action_type="page_load")
                 try:
                     # Use the proven working selector from test
                     like_button = driver.find_element(By.XPATH, "//div[contains(@role, 'button') and contains(., 'Like')]")
+                    # Add human-like delay before clicking like
+                    human_delay(action_type="click")
                     # Use JavaScript click (same as successful test)
                     driver.execute_script("arguments[0].click();", like_button)
                     print(f'✓ Successfully liked a post of user: {user}')
                     
                     # Wait and verify like was successful
-                    time.sleep(2)
+                    human_delay(action_type="interaction")
                     try:
                         unlike_elements = driver.find_elements(By.XPATH, "//*[@aria-label='Unlike']")
                         if unlike_elements:
@@ -403,6 +450,9 @@ def main():
         
         print(f"Selected follower from your followers: {follower1}")
         
+        # Random delay between steps to appear more human
+        human_delay(action_type="navigation")
+        
         # Step 2: Get followers from the selected follower's account
         print(f"=== Step 2: Getting followers from {follower1}'s account ===")
         
@@ -435,6 +485,9 @@ def main():
             
         print(f"Found {len(followers_list)} total followers for {follower1}")
         
+        # Random delay before gender detection
+        human_delay(action_type="general")
+        
         # Step 3: Filter for female users
         print(f"=== Step 3: Finding female users among {follower1}'s followers ===")
         female_followers = filter_female_users(followers_list, max_to_check=40)
@@ -446,6 +499,9 @@ def main():
         else:
             follower2 = female_followers[0]  # Only one female user since we stop at first
             print(f"✨ Selected female follower: {follower2}")
+        
+        # Random delay before final interaction
+        human_delay(action_type="navigation")
         
         # Step 4: Interact with the final selected user
         print(f"=== Step 4: Interacting with {follower2} ===")
