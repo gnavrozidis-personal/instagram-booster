@@ -2,6 +2,7 @@ import random
 import time
 import json
 import os
+import requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -9,6 +10,62 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+
+def detect_gender_free_api(profile_name):
+    """
+    Use free gender detection API with Greek context
+    """
+    try:
+        # Extract first name (assumes format like "maria_k" or "maria k")
+        first_name = profile_name.replace('_', ' ').split()[0]
+        
+        # Use free gender API with Greek context
+        url = f"https://api.genderize.io/?name={first_name}&country_id=GR"
+        response = requests.get(url)
+        data = response.json()
+        
+        if data.get('gender'):
+            probability = data.get('probability', 0)
+            print(f"  Gender API: {first_name} -> {data['gender']} (confidence: {probability:.2f})")
+            if probability > 0.6:  # Reasonable confidence for Greek names
+                return data['gender']
+            else:
+                return "unknown"
+        return "unknown"
+        
+    except Exception as e:
+        print(f"Error with free API: {e}")
+        return "unknown"
+
+def filter_female_users(usernames, max_to_check=10):
+    """
+    Filter a list of usernames to find female users - stops at first female found
+    """
+    print(f"\n🔍 Checking gender - will stop at first female user found...")
+    female_users = []
+    checked = 0
+    
+    for username in usernames:
+        if checked >= max_to_check:
+            break
+            
+        print(f"\nChecking user {checked + 1}: {username}")
+        gender = detect_gender_free_api(username)
+        
+        if gender == "female":
+            female_users.append(username)
+            print(f"  ✓ Female user found: {username}")
+            print(f"  🎯 Stopping search - found first female user!")
+            break  # Stop immediately when first female is found
+        else:
+            print(f"  ⚪ {username} -> {gender}")
+            
+        checked += 1
+        # Be nice to the free API
+        time.sleep(0.5)
+    
+    print(f"\n📊 Results: Found {len(female_users)} female users out of {checked} checked")
+    return female_users
 
 def get_random_follower(driver, user=None, my_username=None):
     # Define cache file path - use specific naming for clarity
@@ -346,18 +403,54 @@ def main():
         
         print(f"Selected follower from your followers: {follower1}")
         
-        # Step 2: Get a random follower from the selected follower's followers (creates/uses {username}_followers.json)
-        print(f"=== Step 2: Getting random follower from {follower1}'s followers ===")
-        follower2 = get_random_follower(driver, user=follower1)
-        if not follower2:
+        # Step 2: Get followers from the selected follower's account
+        print(f"=== Step 2: Getting followers from {follower1}'s account ===")
+        
+        # First, get all followers from follower1
+        cache_file = f"{follower1}_followers.json"
+        followers_list = []
+        
+        if os.path.exists(cache_file):
+            print(f"Found cached followers for {follower1}")
+            try:
+                with open(cache_file, 'r') as f:
+                    cached_data = json.load(f)
+                    followers_list = cached_data.get('followers', [])
+            except Exception as e:
+                print(f"Error reading cache file: {e}")
+        
+        if not followers_list:
+            print(f"No cached followers found. Fetching followers from {follower1}...")
+            # Use the existing function to get followers
+            get_random_follower(driver, user=follower1)
+            # Try to load the newly created cache
+            if os.path.exists(cache_file):
+                with open(cache_file, 'r') as f:
+                    cached_data = json.load(f)
+                    followers_list = cached_data.get('followers', [])
+        
+        if not followers_list:
             print(f'No followers found for user {follower1}.')
             return
+            
+        print(f"Found {len(followers_list)} total followers for {follower1}")
         
-        print(f"Selected follower from {follower1}'s followers: {follower2}")
+        # Step 3: Filter for female users
+        print(f"=== Step 3: Finding female users among {follower1}'s followers ===")
+        female_followers = filter_female_users(followers_list, max_to_check=40)
         
-        # Step 3: Interact with the final selected user
-        print(f"=== Step 3: Interacting with {follower2} ===")
+        if not female_followers:
+            print("❌ No female users found in the checked followers.")
+            print("🔄 Falling back to random follower selection...")
+            follower2 = random.choice(followers_list)
+        else:
+            follower2 = female_followers[0]  # Only one female user since we stop at first
+            print(f"✨ Selected female follower: {follower2}")
+        
+        # Step 4: Interact with the final selected user
+        print(f"=== Step 4: Interacting with {follower2} ===")
         check_private_and_act(driver, follower2)
+        
     except Exception as e:
         print(f'Error: {e}')
     finally:
