@@ -433,8 +433,96 @@ def check_private_and_act(driver, user):
                         print('✗ Could not find any working like button selector.')
             else:
                 print('No valid posts found to like.')
+                # Try to find and click follow button as fallback
+                try_follow_button(driver, user)
         else:
             print('No posts found to like.')
+            # Try to find and click follow button as fallback
+            try_follow_button(driver, user)
+
+def try_follow_button(driver, user):
+    """
+    Try to find and click follow button when no posts are available
+    """
+    print(f"🔄 Looking for follow button for user: {user}")
+    
+    # Multiple selectors for follow button (based on successful test)
+    follow_selectors = [
+        # Primary selector that worked in test
+        "//button[contains(@class, '_acan _acap _acas _aj1- _ap30')]//div[contains(text(), 'Follow')]",
+        "//button[contains(@class, '_acan')]//div[contains(text(), 'Follow')]",
+        
+        # Alternative approaches
+        "//button[.//div[contains(text(), 'Follow')] and contains(@class, '_acan')]",
+        "//button[@type='button'][.//div[text()='Follow']]",
+        "//button[@type='button'][contains(., 'Follow')]",
+        
+        # Class-based selectors
+        "//div[contains(@class, '_ap3a') and text()='Follow']/ancestor::button",
+        "//div[text()='Follow']/ancestor::button[1]",
+        
+        # More generic selectors
+        "//button[text()='Follow']",
+        "//button[contains(text(), 'Follow')]",
+        "//button[contains(@aria-label, 'Follow')]",
+        "//*[@role='button'][contains(., 'Follow')]",
+        
+        # Very broad fallback
+        "//*[contains(text(), 'Follow') and (name()='button' or @role='button')]"
+    ]
+    
+    follow_clicked = False
+    
+    for i, selector in enumerate(follow_selectors):
+        try:
+            print(f"  Trying follow selector {i+1}/{len(follow_selectors)}...")
+            follow_buttons = driver.find_elements(By.XPATH, selector)
+            
+            if follow_buttons:
+                for j, button in enumerate(follow_buttons):
+                    try:
+                        # Check if button is visible and clickable
+                        if button.is_displayed() and button.is_enabled():
+                            button_text = button.text.strip()
+                            
+                            # Verify it's actually a follow button
+                            if 'Follow' in button_text:
+                                print(f"  ✓ Valid follow button found: '{button_text}'")
+                                
+                                # Add human-like delay before clicking
+                                human_delay(action_type="click")
+                                
+                                # Try JavaScript click first (more reliable)
+                                driver.execute_script("arguments[0].click();", button)
+                                print(f"✅ Successfully clicked follow button for user: {user}")
+                                
+                                # Wait to see if click was successful
+                                human_delay(action_type="interaction")
+                                
+                                follow_clicked = True
+                                break
+                            else:
+                                print(f"  ⚪ Button found but text is '{button_text}' (not Follow)")
+                        else:
+                            print(f"  ⚪ Button {j+1} not clickable (hidden or disabled)")
+                            
+                    except Exception as e:
+                        print(f"  ❌ Error with button {j+1}: {str(e)[:50]}...")
+                        continue
+                
+                if follow_clicked:
+                    break
+            else:
+                print(f"  ❌ No elements found with selector {i+1}")
+                
+        except Exception as e:
+            print(f"  ❌ Selector {i+1} failed: {str(e)[:50]}...")
+            continue
+    
+    if not follow_clicked:
+        print(f"❌ Could not find or click any follow button for user: {user}")
+    
+    return follow_clicked
 
 def main():
     chrome_options = Options()

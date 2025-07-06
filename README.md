@@ -45,6 +45,11 @@ Run this command in your terminal/command prompt:
 chrome.exe --remote-debugging-port=9222 --user-data-dir="C:\temp\chrome_dev"
 ```
 
+**Windows PowerShell:**
+```powershell
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="C:\temp\chrome_debug"
+```
+
 **macOS:**
 ```bash
 /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir="/tmp/chrome_dev"
