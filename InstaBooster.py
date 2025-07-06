@@ -286,31 +286,47 @@ def check_private_and_act(driver, user):
                 random_post = random.choice(valid_posts)
                 print(f"Selected random post: {random_post.get_attribute('href')}")
                 driver.get(random_post.get_attribute('href'))
-                print("⏱️ Waiting 1.5 seconds for post to load...")
-                time.sleep(1.5)
+                print("⏱️ Waiting 3 seconds for post to load...")
+                time.sleep(3)
                 try:
+                    # Use the proven working selector from test
                     like_button = driver.find_element(By.XPATH, "//div[contains(@role, 'button') and contains(., 'Like')]")
-                    like_button.click()
+                    # Use JavaScript click (same as successful test)
+                    driver.execute_script("arguments[0].click();", like_button)
                     print(f'✓ Successfully liked a post of user: {user}')
+                    
+                    # Wait and verify like was successful
+                    time.sleep(2)
+                    try:
+                        unlike_elements = driver.find_elements(By.XPATH, "//*[@aria-label='Unlike']")
+                        if unlike_elements:
+                            print(f'✓ Confirmed: Post is now liked (found {len(unlike_elements)} Unlike elements)')
+                        else:
+                            print(f'? Like status unclear - but click was executed')
+                    except:
+                        print(f'? Could not verify like status')
+                        
                 except Exception as like_error:
-                    print(f'Could not like the post: {like_error}')
-                    # Try alternative like button selectors
+                    print(f'Could not like the post with primary selector: {like_error}')
+                    # Try alternative like button selectors with JavaScript click
                     alternative_selectors = [
-                        "//span[@aria-label='Like']",
-                        "//button[contains(@aria-label, 'Like')]",
                         "//*[@aria-label='Like']",
-                        "//svg[@aria-label='Like']"
+                        "//span[@aria-label='Like']", 
+                        "//svg[@aria-label='Like']",
+                        "//button[contains(@aria-label, 'Like')]"
                     ]
+                    success = False
                     for selector in alternative_selectors:
                         try:
                             alt_like_button = driver.find_element(By.XPATH, selector)
-                            alt_like_button.click()
-                            print(f'✓ Successfully liked post using alternative selector')
+                            driver.execute_script("arguments[0].click();", alt_like_button)
+                            print(f'✓ Successfully liked post using alternative selector: {selector}')
+                            success = True
                             break
                         except:
                             continue
-                    else:
-                        print('Could not find any working like button selector.')
+                    if not success:
+                        print('✗ Could not find any working like button selector.')
             else:
                 print('No valid posts found to like.')
         else:

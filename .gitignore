@@ -53,7 +53,8 @@ Thumbs.db
 geckodriver.log
 chromedriver.log
 
-# Cache files
+# Cache files and JSON data
+*.json
 *_followers.json
 my_followers.json
 
