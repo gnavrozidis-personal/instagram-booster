@@ -138,7 +138,7 @@ def batch_gender_detection(usernames, batch_size=10):
 def filter_female_users(usernames, max_to_check=10):
     """
     Filter a list of usernames to find female users using batch API calls
-    Stops at first female found for efficiency
+    Stops IMMEDIATELY when first female is found in any batch
     """
     print(f"\n🔍 Starting efficient batch gender detection...")
     print(f"Will check up to {max_to_check} users and stop at first female found")
@@ -146,24 +146,79 @@ def filter_female_users(usernames, max_to_check=10):
     # Limit the usernames to check
     usernames_to_check = usernames[:max_to_check]
     
-    # Use batch detection for efficiency
-    gender_results = batch_gender_detection(usernames_to_check, batch_size=10)
+    # Extract first names and create mapping (same as batch_gender_detection)
+    username_to_firstname = {}
+    first_names = []
     
-    # Look for the first female user
-    female_users = []
-    for username in usernames_to_check:  # Preserve order
-        if username in gender_results:
-            gender = gender_results[username]
-            if gender == "female":
-                female_users.append(username)
-                print(f"🎯 FOUND FEMALE USER: {username}")
-                print(f"✅ Stopping search at first female user!")
-                break  # Stop immediately when first female is found
+    for username in usernames_to_check:
+        first_name = extract_first_name(username)
+        first_names.append(first_name)
+        username_to_firstname[first_name] = username
+    
+    print(f"📋 Extracted first names: {first_names}")
+    
+    # Process in batches and STOP at first female found
+    batch_size = 10
+    
+    for i in range(0, len(first_names), batch_size):
+        batch = first_names[i:i+batch_size]
+        batch_usernames = [username_to_firstname[name] for name in batch if name in username_to_firstname]
+        
+        print(f"\n📦 Processing batch {i//batch_size + 1}: {batch}")
+        
+        try:
+            # Build URL with name[] parameters (proven format)
+            base_url = "https://api.genderize.io/"
+            params = [f"name[]={name}" for name in batch]
+            url = f"{base_url}?{'&'.join(params)}"
+            
+            response = requests.get(url, timeout=15)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Process results and look for first female immediately
+                for result in data:
+                    first_name = result.get('name', '').lower()
+                    gender = result.get('gender', '')
+                    probability = result.get('probability', 0)
+                    
+                    if first_name in username_to_firstname:
+                        original_username = username_to_firstname[first_name]
+                        
+                        # Only accept high-confidence results
+                        if probability > 0.6:
+                            print(f"  ✅ {original_username} -> {gender} (prob: {probability:.2f})")
+                            
+                            # CHECK FOR FEMALE IMMEDIATELY
+                            if gender == "female":
+                                print(f"🎯 FOUND FEMALE USER: {original_username}")
+                                print(f"✅ Stopping search immediately - no more API calls needed!")
+                                return [original_username]
+                                
+                        else:
+                            print(f"  ⚪ {original_username} -> unknown (low confidence: {probability:.2f})")
+                
+                # No female found in this batch, continue to next batch
+                print(f"  ⚪ No female users found in this batch")
+                
+            elif response.status_code == 429:
+                print("  ⚠️  Rate limited! Pausing...")
+                time.sleep(5)
+                continue
             else:
-                print(f"⚪ {username} -> {gender}")
+                print(f"  ❌ API Error: {response.status_code}")
+                
+        except Exception as e:
+            print(f"  ❌ Exception: {e}")
+        
+        # Add delay only if there are more batches to process
+        if i + batch_size < len(first_names):
+            human_delay(action_type="api_call")
     
-    print(f"\n📊 Results: Found {len(female_users)} female users")
-    return female_users
+    # No female users found in any batch
+    print(f"\n📊 Results: No female users found in {len(usernames_to_check)} checked users")
+    return []
 
 def get_random_follower(driver, user=None, my_username=None):
     # Define cache file path - use specific naming for clarity
