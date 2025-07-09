@@ -1,4 +1,16 @@
-# Python
+# Ignore everything except InstaBooster related files
+*
+
+# But don't ignore these InstaBooster files:
+!InstaBooster.py
+!InstaBooster/
+!InstaBooster/**
+
+# Keep essential project files
+!.gitignore
+!README.md
+
+# Python cache and build files (still ignore these)
 __pycache__/
 *.py[cod]
 *$py.class
@@ -22,6 +34,7 @@ wheels/
 MANIFEST
 
 # Virtual environments
+.venv/
 venv/
 env/
 ENV/
@@ -40,7 +53,8 @@ Thumbs.db
 geckodriver.log
 chromedriver.log
 
-# Cache files
+# Cache files and JSON data
+*.json
 *_followers.json
 my_followers.json
 

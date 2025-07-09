@@ -1,0 +1,1073 @@
+import random
+import time
+import json
+import os
+import requests
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+# Gender API Configuration
+GENDER_API_CONFIG = {
+    "current_api": "gender_api",  # Options: "genderize", "gender_api", "namsor"
+    "apis": {
+        "genderize": {
+            "url": "https://api.genderize.io/",
+            "key_required": False,
+            "batch_size": 10,
+            "rate_limit_delay": 1.0
+        },
+        "gender_api": {
+            "url": "https://gender-api.com/get",
+            "key_required": True,
+            "api_key": "7181f4b765c9a17d17ea31010d45d0a48e0a6460bf16498d7f172ef876592145",  # Replace with your actual API key
+            "batch_size": 100,
+            "rate_limit_delay": 0.1
+        },
+        "namsor": {
+            "url": "https://v2.namsor.com/NamSorAPIv2/api2/json/genderBatch",
+            "key_required": True,
+            "api_key": "55aa972a6c2a800a9c33e1f9a6517a8c",  # Replace with your actual API key
+            "batch_size": 100,
+            "rate_limit_delay": 0.1
+        }
+    }
+}
+
+def human_delay(min_delay=1.0, max_delay=3.0, action_type="general"):
+    """
+    Create human-like delays with randomization and normalization
+    
+    Args:
+        min_delay: Minimum delay in seconds
+        max_delay: Maximum delay in seconds  
+        action_type: Type of action for context-aware delays
+    """
+    # Context-aware delay ranges
+    delay_ranges = {
+        "page_load": (2.0, 4.5),
+        "click": (0.8, 2.2),
+        "scroll": (1.2, 2.8),
+        "api_call": (0.5, 1.5),
+        "interaction": (1.5, 3.5),
+        "navigation": (2.5, 4.0),
+        "general": (min_delay, max_delay)
+    }
+    
+    # Get appropriate delay range
+    if action_type in delay_ranges:
+        min_delay, max_delay = delay_ranges[action_type]
+    
+    # Generate random delay with slight bias toward middle values (more human-like)
+    delay = random.uniform(min_delay, max_delay)
+    
+    # Add micro-variations (simulate human inconsistency)
+    micro_variation = random.uniform(-0.1, 0.1)
+    delay += micro_variation
+    
+    # Ensure minimum delay
+    delay = max(delay, 0.5)
+    
+    print(f"⏱️ Human delay: {delay:.2f}s ({action_type})")
+    time.sleep(delay)
+    return delay
+
+def extract_first_name(username):
+    """
+    Extract first name from Instagram username
+    """
+    # Remove common username characters and split
+    first_name = username.replace('_', ' ').replace('.', ' ').split()[0].lower()
+    return first_name
+
+def batch_gender_detection(usernames, batch_size=None):
+    """
+    Robust batch gender detection using multiple APIs with automatic fallback
+    Supports Genderize.io, Gender-API.com, and NamSor with smart rate limiting
+    """
+    print(f"\n🔍 Starting batch gender detection for {len(usernames)} users")
+    
+    current_api = GENDER_API_CONFIG['current_api']
+    api_config = GENDER_API_CONFIG['apis'][current_api]
+    
+    # Use API-specific batch size if not specified
+    if batch_size is None:
+        batch_size = api_config['batch_size']
+    
+    print(f"Using API: {current_api} (batch size: {batch_size})")
+    
+    # Extract first names from usernames
+    first_names = []
+    username_to_firstname = {}
+    
+    for username in usernames:
+        first_name = extract_first_name(username)
+        first_names.append(first_name)
+        username_to_firstname[first_name] = username
+    
+    results = {}
+    
+    print(f"Processing {len(first_names)} unique names in batches of {batch_size}")
+    
+    for i in range(0, len(first_names), batch_size):
+        batch = first_names[i:i+batch_size]
+        print(f"\n📦 Processing batch {i//batch_size + 1}: {batch}")
+        
+        try:
+            batch_results = call_gender_api(batch, current_api)
+            
+            # Process results based on API type
+            if current_api == "genderize":
+                batch_processed = process_genderize_results(batch_results, username_to_firstname)
+            elif current_api == "gender_api":
+                batch_processed = process_gender_api_results(batch_results, username_to_firstname)
+            elif current_api == "namsor":
+                batch_processed = process_namsor_results(batch_results, username_to_firstname)
+            else:
+                batch_processed = {}
+            
+            results.update(batch_processed)
+                
+        except Exception as e:
+            print(f"  ❌ Exception: {e}")
+            # Mark batch as unknown on error
+            for name in batch:
+                if name in username_to_firstname:
+                    results[username_to_firstname[name]] = "unknown"
+        
+        # Smart delay based on API
+        if i + batch_size < len(first_names):
+            delay = api_config['rate_limit_delay']
+            time.sleep(delay)
+    
+    print(f"\n📊 Batch detection complete. Processed {len(results)} users.")
+    return results
+
+def call_gender_api(names, api_type):
+    """
+    Make API call to the specified gender detection service
+    Handles rate limiting with exponential backoff
+    """
+    api_config = GENDER_API_CONFIG['apis'][api_type]
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            if api_type == "genderize":
+                return call_genderize_api(names, api_config)
+            elif api_type == "gender_api":
+                return call_gender_api_com(names, api_config)
+            elif api_type == "namsor":
+                return call_namsor_api(names, api_config)
+                
+        except requests.exceptions.RequestException as e:
+            if "429" in str(e) or "rate limit" in str(e).lower():
+                wait_time = (2 ** attempt) * 2  # Exponential backoff: 2s, 4s, 8s
+                print(f"  ⚠️  Rate limited! Waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
+                time.sleep(wait_time)
+                continue
+            else:
+                raise e
+    
+    raise Exception(f"Failed after {max_retries} attempts due to rate limiting")
+
+def call_genderize_api(names, api_config):
+    """Call Genderize.io API"""
+    base_url = api_config['url']
+    params = [f"name[]={name}" for name in names]
+    url = f"{base_url}?{'&'.join(params)}"
+    
+    response = requests.get(url, timeout=15)
+    
+    if response.status_code == 200:
+        return response.json()
+    elif response.status_code == 429:
+        raise requests.exceptions.RequestException("429 Rate Limited")
+    else:
+        response.raise_for_status()
+
+def call_gender_api_com(names, api_config):
+    """Call Gender-API.com API"""
+    if api_config['api_key'] == "YOUR_GENDER_API_KEY_HERE":
+        raise Exception("Please set your Gender-API.com API key in GENDER_API_CONFIG")
+    
+    results = []
+    for name in names:
+        url = f"{api_config['url']}?name={name}&key={api_config['api_key']}"
+        response = requests.get(url, timeout=15)
+        
+        if response.status_code == 200:
+            results.append(response.json())
+        elif response.status_code == 429:
+            raise requests.exceptions.RequestException("429 Rate Limited")
+        else:
+            response.raise_for_status()
+    
+    return results
+
+def call_namsor_api(names, api_config):
+    """Call NamSor API"""
+    if api_config['api_key'] == "YOUR_NAMSOR_API_KEY_HERE":
+        raise Exception("Please set your NamSor API key in GENDER_API_CONFIG")
+    
+    headers = {
+        'X-API-KEY': api_config['api_key'],
+        'Content-Type': 'application/json'
+    }
+    
+    # NamSor expects a specific format
+    data = {
+        "personalNames": [{"firstName": name} for name in names]
+    }
+    
+    response = requests.post(api_config['url'], json=data, headers=headers, timeout=15)
+    
+    if response.status_code == 200:
+        return response.json()
+    elif response.status_code == 429:
+        raise requests.exceptions.RequestException("429 Rate Limited")
+    else:
+        response.raise_for_status()
+
+def process_genderize_results(data, username_to_firstname):
+    """Process results from Genderize.io API"""
+    results = {}
+    
+    for result in data:
+        first_name = result.get('name', '').lower()
+        gender = result.get('gender', '')
+        probability = result.get('probability', 0)
+        
+        if first_name in username_to_firstname:
+            original_username = username_to_firstname[first_name]
+            
+            # Only accept high-confidence results
+            if probability > 0.6:
+                results[original_username] = gender
+                print(f"  ✅ {original_username} -> {gender} (prob: {probability:.2f})")
+            else:
+                results[original_username] = "unknown"
+                print(f"  ⚪ {original_username} -> unknown (low confidence: {probability:.2f})")
+    
+    return results
+
+def process_gender_api_results(data, username_to_firstname):
+    """Process results from Gender-API.com"""
+    results = {}
+    
+    for result in data:
+        first_name = result.get('name', '').lower()
+        gender = result.get('gender', '')
+        accuracy = result.get('accuracy', 0)
+        
+        if first_name in username_to_firstname:
+            original_username = username_to_firstname[first_name]
+            
+            # Gender-API.com returns accuracy as percentage
+            if accuracy > 60:
+                results[original_username] = gender
+                print(f"  ✅ {original_username} -> {gender} (accuracy: {accuracy}%)")
+            else:
+                results[original_username] = "unknown"
+                print(f"  ⚪ {original_username} -> unknown (low accuracy: {accuracy}%)")
+    
+    return results
+
+def process_namsor_results(data, username_to_firstname):
+    """Process results from NamSor API"""
+    results = {}
+    
+    for result in data.get('personalNames', []):
+        first_name = result.get('firstName', '').lower()
+        gender = result.get('likelyGender', '')
+        score = result.get('score', 0)
+        
+        if first_name in username_to_firstname:
+            original_username = username_to_firstname[first_name]
+            
+            # NamSor uses a different scoring system
+            if abs(score) > 0.6:
+                results[original_username] = gender.lower()
+                print(f"  ✅ {original_username} -> {gender.lower()} (score: {score:.2f})")
+            else:
+                results[original_username] = "unknown"
+                print(f"  ⚪ {original_username} -> unknown (low score: {score:.2f})")
+    
+    return results
+
+def filter_female_users(usernames, max_to_check=40, max_females=10):
+    """
+    Filter a list of usernames to find female users using the new multi-API system
+    Stops when max_females found or all usernames checked
+    Skips already processed profiles
+    """
+    print(f"\n🔍 Starting efficient batch gender detection...")
+    print(f"Will check up to {max_to_check} users and stop when {max_females} female users found")
+    
+    # Load processed profiles to avoid duplicates
+    processed_profiles = load_processed_profiles()
+    
+    # Filter out already processed users
+    unprocessed_usernames = filter_unprocessed_users(usernames, processed_profiles)
+    
+    if not unprocessed_usernames:
+        print("❌ All available users have already been processed!")
+        return []
+    
+    # Limit the usernames to check
+    usernames_to_check = unprocessed_usernames[:max_to_check]
+    
+    # Use the new batch_gender_detection function which handles multiple APIs
+    gender_results = batch_gender_detection(usernames_to_check)
+    
+    # Extract female users from the results
+    female_users = []
+    
+    for username, gender in gender_results.items():
+        if gender == "female":
+            female_users.append(username)
+            print(f"🎯 FOUND FEMALE USER #{len(female_users)}: {username}")
+            
+            # Check if we have enough females
+            if len(female_users) >= max_females:
+                print(f"✅ Reached target of {max_females} female users - stopping search!")
+                break
+    
+    # Return whatever females we found
+    print(f"\n📊 Results: Found {len(female_users)} female users in {len(usernames_to_check)} checked users")
+    return female_users
+
+def get_random_follower(driver, user=None, my_username=None):
+    # Define cache file path - use specific naming for clarity
+    if user:
+        cache_file = f"{user}_followers.json"
+    else:
+        cache_file = "my_followers.json"
+    
+    # Check if cached followers exist
+    if os.path.exists(cache_file):
+        print(f"Found cached followers in {cache_file}")
+        try:
+            with open(cache_file, 'r') as f:
+                cached_data = json.load(f)
+                valid_usernames = cached_data.get('followers', [])
+                if valid_usernames:
+                    username = random.choice(valid_usernames)
+                    print(f"Selected follower from cache: {username}")
+                    return username
+        except Exception as e:
+            print(f"Error reading cache file: {e}")
+    
+    print(f"No valid cache found for {user or 'your account'}. Fetching followers from Instagram...")
+    
+    if user:
+        driver.get(f'https://www.instagram.com/{user}/')
+    else:
+        driver.get('https://www.instagram.com/')
+        try:
+            try:
+                profile_element = None
+                selectors = [
+                    "//span[text()='Profile']",
+                    "//a[contains(@href, '/') and .//span[text()='Profile']]",
+                    "//span[contains(text(), 'Profile')]",
+                    "//button[contains(text(), 'Profile')]",
+                    "//div[contains(text(), 'Profile')]",
+                    "//span[contains(@class, 'x1lliihq') and text()='Profile']",
+                ]
+                for selector in selectors:
+                    try:
+                        profile_element = driver.find_element(By.XPATH, selector)
+                        print(f"Found Profile element using selector: {selector}")
+                        break
+                    except:
+                        continue
+                if profile_element:
+                    profile_element.click()
+                    current_url = driver.current_url
+                    if current_url.count('/') >= 4:
+                        my_username = current_url.strip('/').split('/')[-1]
+                        print(f"Found username by clicking Profile: {my_username}")
+                    else:
+                        raise Exception("Profile click didn't lead to profile page")
+                else:
+                    raise Exception("Could not find Profile element with any selector")
+            except Exception as e:
+                print(f"Profile element method failed: {e}")
+                my_username = None
+                try:
+                    profile_links = driver.find_elements(By.XPATH, "//a[contains(@href, '/') and not(contains(@href, '/explore')) and not(contains(@href, '/direct')) and not(contains(@href, '/accounts'))]")
+                    for link in profile_links:
+                        href = link.get_attribute('href')
+                        if href and href.count('/') >= 3:
+                            username_candidate = href.strip('/').split('/')[-1]
+                            if username_candidate and len(username_candidate) > 0 and username_candidate not in ['explore', 'direct', 'accounts', 'reels', 'stories']:
+                                my_username = username_candidate
+                                break
+                except Exception:
+                    pass
+                if not my_username:
+                    try:
+                        profile_imgs = driver.find_elements(By.XPATH, "//img[@alt and contains(@alt, 'profile picture')]")
+                        for img in profile_imgs:
+                            parent_a = img.find_element(By.XPATH, './ancestor::a[1]')
+                            href = parent_a.get_attribute('href')
+                            if href and '/accounts/' not in href:
+                                username_candidate = href.strip('/').split('/')[-1]
+                                if username_candidate and len(username_candidate) > 0:
+                                    my_username = username_candidate
+                                    break
+                    except Exception:
+                        pass
+                if not my_username:
+                    raise Exception("Could not find username using any method")
+                print(f"Found username: {my_username}")
+        except Exception as e:
+            print(f'Could not determine your username from the open session: {e}')
+            return None
+        if not driver.current_url.endswith(f'/{my_username}/'):
+            driver.get(f'https://www.instagram.com/{my_username}/')
+    try:
+        followers_link = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, "//header//a[contains(@href, '/followers')]"))
+        )
+        driver.execute_script("arguments[0].click();", followers_link)
+        print("⏱️ Waiting after clicking followers link...")
+        human_delay(action_type="click")
+    except Exception as e:
+        print('Could not find or click the followers link.')
+        return None
+    try:
+        followers_dialog = WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.XPATH, '//div[@role="dialog"]'))
+        )
+        scroll_box = None
+        max_scroll_height = 0
+        scroll_box_candidate = None
+        print("Searching for scrollable container...")
+        divs_with_overflow = followers_dialog.find_elements(By.XPATH, './/div[contains(@style, "overflow")]')
+        for div in divs_with_overflow:
+            try:
+                sh = driver.execute_script('return arguments[0].scrollHeight', div)
+                ch = driver.execute_script('return arguments[0].clientHeight', div)
+                if sh > ch and sh > 100:
+                    scroll_box = div
+                    print(f"Found scrollable div with overflow style: scrollHeight={sh}, clientHeight={ch}")
+                    break
+            except Exception:
+                continue
+        if not scroll_box:
+            containers = followers_dialog.find_elements(By.XPATH, './/div[.//a[contains(@href, "/")]]')
+            for container in containers:
+                try:
+                    sh = driver.execute_script('return arguments[0].scrollHeight', div)
+                    ch = driver.execute_script('return arguments[0].clientHeight', div)
+                    if sh > ch and sh > max_scroll_height:
+                        max_scroll_height = sh
+                        scroll_box_candidate = container
+                        print(f"Found potential container: scrollHeight={sh}, clientHeight={ch}")
+                except Exception:
+                    continue
+        if not scroll_box:
+            for div in followers_dialog.find_elements(By.XPATH, './/div'):
+                try:
+                    sh = driver.execute_script('return arguments[0].scrollHeight', div)
+                    ch = driver.execute_script('return arguments[0].clientHeight', div)
+                    if sh > ch and sh > max_scroll_height:
+                        max_scroll_height = sh
+                        scroll_box_candidate = div
+                except Exception:
+                    continue
+            if scroll_box_candidate:
+                scroll_box = scroll_box_candidate
+                print(f"Using fallback scroll box: scrollHeight={max_scroll_height}")
+        if not scroll_box:
+            print('Scrollable box not found in followers dialog.')
+            return None
+    except Exception as e:
+        print('Followers dialog did not appear or scrollable box not found.')
+        return None
+    try:
+        WebDriverWait(driver, 15).until(
+            lambda d: len(followers_dialog.find_elements(By.XPATH, ".//a[contains(@href, '/') and string-length(@href) > 2]")) > 0
+        )
+    except Exception:
+        print('No followers loaded in the dialog. Dumping dialog HTML for debugging:')
+        try:
+            print(followers_dialog.get_attribute('outerHTML'))
+        except Exception as e:
+            print(f'Could not get dialog HTML: {e}')
+        return None
+    target_usernames = 200
+    max_scroll_attempts = 80
+    collected_usernames = set()
+    import re
+    no_new_users_count = 0
+    for scroll_attempt in range(max_scroll_attempts):
+        methods_tried = []
+        scroll_worked = False
+        successful_methods = []
+        try:
+            current_scroll = driver.execute_script('return arguments[0].scrollTop;', scroll_box)
+            # Randomize scroll amount to appear more human
+            scroll_amount = random.randint(800, 1200)
+            driver.execute_script(f'arguments[0].scrollTop = arguments[0].scrollTop + {scroll_amount};', scroll_box)
+            print("⏱️ Waiting after scroll...")
+            human_delay(action_type="scroll")
+            new_scroll = driver.execute_script('return arguments[0].scrollTop;', scroll_box)
+            methods_tried.append("JS_SCROLL_BOX")
+            if new_scroll > current_scroll:
+                successful_methods.append("JS_SCROLL_BOX")
+                scroll_worked = True
+        except Exception:
+            methods_tried.append("JS_SCROLL_BOX(failed)")
+        all_links_now = followers_dialog.find_elements(By.XPATH, ".//a[contains(@href, '/') and string-length(@href) > 2]")
+        current_usernames = set()
+        for link_elem in all_links_now:
+            href = link_elem.get_attribute('href')
+            if href and '/liked_by/' in href:
+                continue
+            m = re.match(r'^https?://www.instagram.com/([A-Za-z0-9._]{1,30})/?$', href) or re.match(r'^/([A-Za-z0-9._]{1,30})/?$', href)
+            username = m.group(1) if m else None
+            if not username:
+                continue
+            current_usernames.add(username)
+        new_users_this_round = len(current_usernames - collected_usernames)
+        collected_usernames.update(current_usernames)
+        if new_users_this_round == 0:
+            no_new_users_count += 1
+        else:
+            no_new_users_count = 0
+        scroll_status = "✓ Scrolled" if scroll_worked else "✗ No scroll"
+        methods_status = f"Tried: [{', '.join(methods_tried)}] | Worked: [{', '.join(successful_methods)}]"
+        print(f"[Scroll {scroll_attempt+1}] Unique usernames collected: {len(collected_usernames)} (+{new_users_this_round} new) - {methods_status} - {scroll_status}")
+        if len(collected_usernames) >= target_usernames:
+            print(f"Collected at least {target_usernames} usernames, stopping scroll.")
+            break
+        if no_new_users_count >= 8:
+            print(f"No new users found for {no_new_users_count} attempts, likely reached end of followers list. Stopping scroll.")
+            break
+        if no_new_users_count > 5:
+            print(f"No new users for {no_new_users_count} attempts, waiting longer...")
+            human_delay(min_delay=2.0, max_delay=4.0, action_type="general")
+    import re
+    username_regex = re.compile(r'^[A-Za-z0-9._]{1,30}$')
+    forbidden = set([
+        'liked_by', 'following', 'followers', 'explore', 'direct', 'accounts', 'about', 'developer', 'privacy', 'terms', 'directory', 'topics', 'tags', 'reels', 'p', 'stories', 'igtv', 'tv', 'saved', 'notifications', 'settings', 'login', 'signup', 'email', 'phone', 'username', 'password', 'search', 'home', 'profile', 'edit', 'archive', 'activity', 'help', 'support', 'logout', 'discover', 'people', 'suggested', 'close_friends', 'live', 'shop', 'ads', 'business', 'creator', 'professional', 'meta', 'thread', 'threads', 'more'
+    ])
+    all_links = followers_dialog.find_elements(By.XPATH, ".//a[contains(@href, '/') and string-length(@href) > 2]")
+    valid_usernames = []
+    seen_usernames = set()
+    for link_elem in all_links:
+        href = link_elem.get_attribute('href')
+        if href and '/liked_by/' in href:
+            continue
+        m = re.match(r'^https?://www.instagram.com/([A-Za-z0-9._]{1,30})/?$', href) or re.match(r'^/([A-Za-z0-9._]{1,30})/?$', href)
+        username = m.group(1) if m else None
+        if (username and username.lower() != 'liked_by' and 
+            username_regex.match(username) and 
+            username.lower() not in forbidden and 
+            not username.startswith('.') and not username.endswith('.') and
+            username not in seen_usernames):
+            valid_usernames.append(username)
+            seen_usernames.add(username)
+    if not valid_usernames:
+        print(f"No valid followers found. Found {len(all_links)} total links.")
+        return None
+    
+    # Save followers to cache file
+    cache_data = {
+        'followers': valid_usernames,
+        'timestamp': time.time(),
+        'user': user or my_username
+    }
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump(cache_data, f, indent=2)
+        print(f"Saved {len(valid_usernames)} followers to cache file: {cache_file}")
+    except Exception as e:
+        print(f"Error saving cache file: {e}")
+    
+    username = random.choice(valid_usernames)
+    print(f"Selected follower: {username}")
+    return username
+
+def check_private_and_act(driver, user):
+    driver.get(f'https://www.instagram.com/{user}/')
+    print("⏱️ Waiting for profile page to load...")
+    human_delay(action_type="page_load")
+    
+    # First check if we're already following this user
+    try:
+        following_button = driver.find_element(By.XPATH, "//div[contains(text(), 'Following')]")
+        print(f"⏭️ Already following {user} - skipping this profile")
+        return
+    except:
+        # Not following, continue with normal processing
+        pass
+    
+    # Check if account is private first
+    try:
+        private = driver.find_element(By.XPATH, "//*[contains(text(), 'This Account is Private')]")
+        follow_button = driver.find_element(By.XPATH, "//button[text()='Follow']")
+        # Add human-like delay before clicking follow
+        human_delay(action_type="click")
+        follow_button.click()
+        print(f'Followed private user: {user}')
+    except:
+        # Account is public, look for posts
+        posts = driver.find_elements(By.XPATH, '//a[contains(@href, "/p/")]')
+        if posts:
+            valid_posts = []
+            for post in posts:
+                href = post.get_attribute('href')
+                if href and '/liked_by/' not in href and '/p/' in href:
+                    valid_posts.append(post)
+            if valid_posts:
+                # Add small delay before selecting post (human-like browsing behavior)
+                human_delay(min_delay=0.5, max_delay=1.5, action_type="general")
+                random_post = random.choice(valid_posts)
+                print(f"Selected random post: {random_post.get_attribute('href')}")
+                driver.get(random_post.get_attribute('href'))
+                print("⏱️ Waiting for post to load...")
+                human_delay(action_type="page_load")
+                try:
+                    # Use the proven working selector from test
+                    like_button = driver.find_element(By.XPATH, "//div[contains(@role, 'button') and contains(., 'Like')]")
+                    # Add human-like delay before clicking like
+                    human_delay(action_type="click")
+                    # Use JavaScript click (same as successful test)
+                    driver.execute_script("arguments[0].click();", like_button)
+                    print(f'✓ Successfully liked a post of user: {user}')
+                    
+                    # Wait and verify like was successful
+                    human_delay(action_type="interaction")
+                    try:
+                        unlike_elements = driver.find_elements(By.XPATH, "//*[@aria-label='Unlike']")
+                        if unlike_elements:
+                            print(f'✓ Confirmed: Post is now liked (found {len(unlike_elements)} Unlike elements)')
+                        else:
+                            print(f'? Like status unclear - but click was executed')
+                    except:
+                        print(f'? Could not verify like status')
+                        
+                except Exception as like_error:
+                    print(f'Could not like the post with primary selector: {like_error}')
+                    # Try alternative like button selectors with JavaScript click
+                    alternative_selectors = [
+                        "//*[@aria-label='Like']",
+                        "//span[@aria-label='Like']", 
+                        "//svg[@aria-label='Like']",
+                        "//button[contains(@aria-label, 'Like')]"
+                    ]
+                    success = False
+                    for selector in alternative_selectors:
+                        try:
+                            alt_like_button = driver.find_element(By.XPATH, selector)
+                            driver.execute_script("arguments[0].click();", alt_like_button)
+                            print(f'✓ Successfully liked post using alternative selector: {selector}')
+                            success = True
+                            break
+                        except:
+                            continue
+                    if not success:
+                        print('✗ Could not find any working like button selector.')
+            else:
+                print('No valid posts found to like.')
+                # Try to find and click follow button as fallback
+                try_follow_button(driver, user)
+        else:
+            print('No posts found to like.')
+            # Try to find and click follow button as fallback
+            try_follow_button(driver, user)
+
+def try_follow_button(driver, user):
+    """
+    Try to find and click follow button when no posts are available
+    """
+    print(f"🔄 Looking for follow button for user: {user}")
+    
+    # Multiple selectors for follow button (based on successful test)
+    follow_selectors = [
+        # Primary selector that worked in test
+        "//button[contains(@class, '_acan _acap _acas _aj1- _ap30')]//div[contains(text(), 'Follow')]",
+        "//button[contains(@class, '_acan')]//div[contains(text(), 'Follow')]",
+        
+        # Alternative approaches
+        "//button[.//div[contains(text(), 'Follow')] and contains(@class, '_acan')]",
+        "//button[@type='button'][.//div[text()='Follow']]",
+        "//button[@type='button'][contains(., 'Follow')]",
+        
+        # Class-based selectors
+        "//div[contains(@class, '_ap3a') and text()='Follow']/ancestor::button",
+        "//div[text()='Follow']/ancestor::button[1]",
+        
+        # More generic selectors
+        "//button[text()='Follow']",
+        "//button[contains(text(), 'Follow')]",
+        "//button[contains(@aria-label, 'Follow')]",
+        "//*[@role='button'][contains(., 'Follow')]",
+        
+        # Very broad fallback
+        "//*[contains(text(), 'Follow') and (name()='button' or @role='button')]"
+    ]
+    
+    follow_clicked = False
+    
+    for i, selector in enumerate(follow_selectors):
+        try:
+            print(f"  Trying follow selector {i+1}/{len(follow_selectors)}...")
+            follow_buttons = driver.find_elements(By.XPATH, selector)
+            
+            if follow_buttons:
+                for j, button in enumerate(follow_buttons):
+                    try:
+                        # Check if button is visible and clickable
+                        if button.is_displayed() and button.is_enabled():
+                            button_text = button.text.strip()
+                            
+                            # Verify it's actually a follow button
+                            if 'Follow' in button_text:
+                                print(f"  ✓ Valid follow button found: '{button_text}'")
+                                
+                                # Add human-like delay before clicking
+                                human_delay(action_type="click")
+                                
+                                # Try JavaScript click first (more reliable)
+                                driver.execute_script("arguments[0].click();", button)
+                                print(f"✅ Successfully clicked follow button for user: {user}")
+                                
+                                # Wait to see if click was successful
+                                human_delay(action_type="interaction")
+                                
+                                follow_clicked = True
+                                break
+                            else:
+                                print(f"  ⚪ Button found but text is '{button_text}' (not Follow)")
+                        else:
+                            print(f"  ⚪ Button {j+1} not clickable (hidden or disabled)")
+                            
+                    except Exception as e:
+                        print(f"  ❌ Error with button {j+1}: {str(e)[:50]}...")
+                        continue
+                
+                if follow_clicked:
+                    break
+            else:
+                print(f"  ❌ No elements found with selector {i+1}")
+                
+        except Exception as e:
+            print(f"  ❌ Selector {i+1} failed: {str(e)[:50]}...")
+            continue
+    
+    if not follow_clicked:
+        print(f"❌ Could not find or click any follow button for user: {user}")
+    
+    return follow_clicked
+
+def load_processed_profiles():
+    """
+    Load the list of previously processed profiles from processed.json
+    """
+    processed_file = "processed.json"
+    
+    if os.path.exists(processed_file):
+        try:
+            with open(processed_file, 'r') as f:
+                data = json.load(f)
+                processed_profiles = set(data.get('processed_profiles', []))
+                print(f"📋 Loaded {len(processed_profiles)} previously processed profiles")
+                return processed_profiles
+        except Exception as e:
+            print(f"⚠️ Error reading processed.json: {e}")
+            return set()
+    else:
+        print("📋 No processed.json found - starting fresh")
+        return set()
+
+def save_processed_profile(username):
+    """
+    Add a profile to the processed list and save to processed.json
+    """
+    processed_file = "processed.json"
+    
+    # Load existing data
+    processed_profiles = load_processed_profiles()
+    
+    # Add new profile
+    processed_profiles.add(username)
+    
+    # Save back to file
+    data = {
+        'processed_profiles': list(processed_profiles),
+        'last_updated': time.time(),
+        'total_processed': len(processed_profiles)
+    }
+    
+    try:
+        with open(processed_file, 'w') as f:
+            json.dump(data, f, indent=2)
+        print(f"💾 Saved {username} to processed profiles (total: {len(processed_profiles)})")
+    except Exception as e:
+        print(f"❌ Error saving to processed.json: {e}")
+
+def filter_unprocessed_users(usernames, processed_profiles):
+    """
+    Filter out users that have already been processed
+    """
+    unprocessed = [username for username in usernames if username not in processed_profiles]
+    
+    filtered_count = len(usernames) - len(unprocessed)
+    if filtered_count > 0:
+        print(f"🚫 Filtered out {filtered_count} already processed users")
+        print(f"📊 Remaining unprocessed users: {len(unprocessed)}")
+    
+    return unprocessed
+
+def get_available_follower_caches():
+    """
+    Get list of available user follower cache files
+    Returns list of usernames that have follower caches
+    """
+    cache_files = []
+    
+    # Look for all *_followers.json files (excluding my_followers.json)
+    for filename in os.listdir('.'):
+        if filename.endswith('_followers.json') and filename != 'my_followers.json':
+            # Extract username from filename
+            username = filename.replace('_followers.json', '')
+            cache_files.append(username)
+    
+    print(f"📁 Found {len(cache_files)} existing follower cache files")
+    if cache_files:
+        print(f"   Available caches: {cache_files[:5]}{'...' if len(cache_files) > 5 else ''}")
+    
+    return cache_files
+
+def select_random_follower_source(driver):
+    """
+    Decide whether to use existing follower caches or fetch from my_followers
+    If 10+ caches exist, randomly pick one. Otherwise use my_followers.
+    """
+    available_caches = get_available_follower_caches()
+    
+    if len(available_caches) >= 10:
+        # Pick random existing cache
+        selected_user = random.choice(available_caches)
+        print(f"🎲 Found {len(available_caches)} follower caches - randomly selected: {selected_user}")
+        return selected_user, f"{selected_user}_followers.json"
+    else:
+        # Use my_followers as usual
+        print(f"📋 Found only {len(available_caches)} caches (need 10+) - using my_followers.json")
+        follower1 = get_random_follower(driver)
+        return follower1, f"{follower1}_followers.json" if follower1 else None
+
+def main():
+    chrome_options = Options()
+    chrome_options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    try:
+        # Step 1: Smart follower source selection
+        print("=== Step 1: Smart follower source selection ===")
+        follower1, cache_file = select_random_follower_source(driver)
+        
+        if not follower1:
+            print('No followers found.')
+            return
+        
+        print(f"Selected follower source: {follower1}")
+        
+        # Random delay between steps to appear more human
+        human_delay(action_type="navigation")
+        
+        # Step 2: Get followers from the selected source
+        print(f"=== Step 2: Getting followers from {follower1}'s account ===")
+        
+        followers_list = []
+        
+        if os.path.exists(cache_file):
+            print(f"Found cached followers for {follower1}")
+            try:
+                with open(cache_file, 'r') as f:
+                    cached_data = json.load(f)
+                    followers_list = cached_data.get('followers', [])
+            except Exception as e:
+                print(f"Error reading cache file: {e}")
+        
+        if not followers_list:
+            print(f"No cached followers found. Fetching followers from {follower1}...")
+            # Use the existing function to get followers
+            get_random_follower(driver, user=follower1)
+            # Try to load the newly created cache
+            if os.path.exists(cache_file):
+                with open(cache_file, 'r') as f:
+                    cached_data = json.load(f)
+                    followers_list = cached_data.get('followers', [])
+        
+        if not followers_list:
+            print(f'No followers found for user {follower1}.')
+            return
+            
+        print(f"Found {len(followers_list)} total followers for {follower1}")
+        
+        # Random delay before gender detection
+        human_delay(action_type="general")
+        
+        # Step 3: Filter for female users
+        print(f"=== Step 3: Finding female users among {follower1}'s followers ===")
+        female_followers = filter_female_users(followers_list, max_to_check=40, max_females=10)
+        
+        if not female_followers:
+            print("❌ No female users found in the checked followers.")
+            print("🔄 Falling back to random follower selection...")
+            follower2 = random.choice(followers_list)
+            
+            # Random delay before final interaction
+            human_delay(action_type="navigation")
+            
+            # Step 4: Interact with the fallback user
+            print(f"=== Step 4: Interacting with {follower2} (fallback) ===")
+            try:
+                check_private_and_act(driver, follower2)
+                save_processed_profile(follower2)
+                print(f"✅ Successfully processed fallback user: {follower2}")
+            except Exception as e:
+                print(f"❌ Error processing fallback user ({follower2}): {e}")
+                save_processed_profile(follower2)  # Still save as processed
+        else:
+            print(f"✨ Found {len(female_followers)} female users: {female_followers}")
+            
+            # Step 4: Interact with each female user
+            for i, female_user in enumerate(female_followers, 1):
+                print(f"\n=== Step 4.{i}: Interacting with female user {i}/{len(female_followers)}: {female_user} ===")
+                
+                # Random delay before each interaction
+                human_delay(action_type="navigation")
+                
+                try:
+                    check_private_and_act(driver, female_user)
+                    print(f"✅ Successfully processed female user {i}: {female_user}")
+                    
+                    # Save this user as processed
+                    save_processed_profile(female_user)
+                    
+                    # Add delay between users to appear more human
+                    if i < len(female_followers):  # Don't delay after the last user
+                        print(f"⏱️ Waiting before processing next female user...")
+                        human_delay(min_delay=3.0, max_delay=6.0, action_type="general")
+                        
+                except Exception as e:
+                    print(f"❌ Error processing female user {i} ({female_user}): {e}")
+                    # Still save as processed even if interaction failed (to avoid retrying)
+                    save_processed_profile(female_user)
+                    # Continue with next user even if one fails
+                    continue
+            
+            print(f"\n🎉 Completed processing all {len(female_followers)} female users!")
+        
+    except Exception as e:
+        print(f'Error in main execution: {e}')
+        raise  # Re-raise to be caught by continuous loop
+    finally:
+        driver.quit()
+
+def continuous_main():
+    """
+    Main function that runs continuously until Ctrl+C is pressed
+    """
+    run_count = 0
+    
+    print("🚀 Starting InstaBooster in continuous mode")
+    print("💡 Press Ctrl+C to stop the script")
+    print("=" * 80)
+    
+    try:
+        while True:
+            run_count += 1
+            
+            print(f"\n🔄 === STARTING RUN #{run_count} ===")
+            print(f"⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            try:
+                main()
+                
+                # Successful run completed
+                print(f"\n✅ === RUN #{run_count} COMPLETED SUCCESSFULLY ===")
+                
+                # Wait between runs (human-like delay)
+                wait_time = random.randint(5, 15)  # 5-15 seconds between runs
+                print(f"⏳ Waiting {wait_time} seconds before next run...")
+                print("💡 Press Ctrl+C during this wait to stop the script")
+                
+                time.sleep(wait_time)
+                
+            except KeyboardInterrupt:
+                # User pressed Ctrl+C
+                raise
+                
+            except Exception as e:
+                print(f"\n❌ === RUN #{run_count} FAILED ===")
+                print(f"💥 Error: {e}")
+                
+                # Wait a bit before retrying (shorter delay on error)
+                wait_time = random.randint(5, 15)  # 5-15 seconds on error
+                print(f"⏳ Waiting {wait_time} seconds before retry...")
+                print("💡 Press Ctrl+C during this wait to stop the script")
+                
+                try:
+                    time.sleep(wait_time)
+                except KeyboardInterrupt:
+                    raise
+                
+                continue
+    
+    except KeyboardInterrupt:
+        print(f"\n\n🛑 === SCRIPT STOPPED BY USER ===")
+        print(f"📊 Total runs completed: {run_count}")
+        print("👋 Goodbye!")
+    
+    except Exception as e:
+        print(f"\n\n💥 === FATAL ERROR ===")
+        print(f"❌ Unexpected error: {e}")
+        print(f"📊 Runs completed before error: {run_count}")
+        raise
+
+def switch_gender_api(api_name):
+    """
+    Switch to a different gender detection API
+    Available options: 'genderize', 'gender_api', 'namsor'
+    """
+    if api_name not in GENDER_API_CONFIG['apis']:
+        print(f"❌ Unknown API: {api_name}")
+        print(f"Available APIs: {list(GENDER_API_CONFIG['apis'].keys())}")
+        return False
+    
+    GENDER_API_CONFIG['current_api'] = api_name
+    print(f"✅ Switched to {api_name} API")
+    return True
+
+def get_api_info():
+    """
+    Get information about the current API configuration
+    """
+    current_api = GENDER_API_CONFIG['current_api']
+    api_config = GENDER_API_CONFIG['apis'][current_api]
+    
+    print(f"\n📊 Current Gender API Configuration:")
+    print(f"  Current API: {current_api}")
+    print(f"  Batch Size: {api_config['batch_size']}")
+    print(f"  Rate Limit Delay: {api_config['rate_limit_delay']}s")
+    print(f"  API Key Required: {api_config['key_required']}")
+    
+    if api_config['key_required']:
+        key_set = api_config['api_key'] != f"YOUR_{current_api.upper()}_API_KEY_HERE"
+        print(f"  API Key Status: {'✅ Set' if key_set else '❌ Not Set'}")
+    
+    return api_config
+
+if __name__ == '__main__':
+    continuous_main()
