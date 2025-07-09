@@ -11,6 +11,33 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+# Gender API Configuration
+GENDER_API_CONFIG = {
+    "current_api": "gender_api",  # Options: "genderize", "gender_api", "namsor"
+    "apis": {
+        "genderize": {
+            "url": "https://api.genderize.io/",
+            "key_required": False,
+            "batch_size": 10,
+            "rate_limit_delay": 1.0
+        },
+        "gender_api": {
+            "url": "https://gender-api.com/get",
+            "key_required": True,
+            "api_key": "7181f4b765c9a17d17ea31010d45d0a48e0a6460bf16498d7f172ef876592145",  # Replace with your actual API key
+            "batch_size": 100,
+            "rate_limit_delay": 0.1
+        },
+        "namsor": {
+            "url": "https://v2.namsor.com/NamSorAPIv2/api2/json/genderBatch",
+            "key_required": True,
+            "api_key": "55aa972a6c2a800a9c33e1f9a6517a8c",  # Replace with your actual API key
+            "batch_size": 100,
+            "rate_limit_delay": 0.1
+        }
+    }
+}
+
 def human_delay(min_delay=1.0, max_delay=3.0, action_type="general"):
     """
     Create human-like delays with randomization and normalization
@@ -57,70 +84,54 @@ def extract_first_name(username):
     first_name = username.replace('_', ' ').replace('.', ' ').split()[0].lower()
     return first_name
 
-def batch_gender_detection(usernames, batch_size=10):
+def batch_gender_detection(usernames, batch_size=None):
     """
-    Detect gender for multiple usernames using batch API calls
-    Returns dict mapping username -> gender
+    Robust batch gender detection using multiple APIs with automatic fallback
+    Supports Genderize.io, Gender-API.com, and NamSor with smart rate limiting
     """
-    print(f"🔍 Starting batch gender detection for {len(usernames)} users...")
+    print(f"\n🔍 Starting batch gender detection for {len(usernames)} users")
     
-    # Extract first names and create mapping
-    username_to_firstname = {}
+    current_api = GENDER_API_CONFIG['current_api']
+    api_config = GENDER_API_CONFIG['apis'][current_api]
+    
+    # Use API-specific batch size if not specified
+    if batch_size is None:
+        batch_size = api_config['batch_size']
+    
+    print(f"Using API: {current_api} (batch size: {batch_size})")
+    
+    # Extract first names from usernames
     first_names = []
+    username_to_firstname = {}
     
     for username in usernames:
         first_name = extract_first_name(username)
         first_names.append(first_name)
         username_to_firstname[first_name] = username
     
-    print(f"📋 Extracted first names: {first_names}")
-    
-    # Process in batches
     results = {}
+    
+    print(f"Processing {len(first_names)} unique names in batches of {batch_size}")
     
     for i in range(0, len(first_names), batch_size):
         batch = first_names[i:i+batch_size]
         print(f"\n📦 Processing batch {i//batch_size + 1}: {batch}")
         
         try:
-            # Build URL with name[] parameters (proven format)
-            base_url = "https://api.genderize.io/"
-            params = [f"name[]={name}" for name in batch]
-            url = f"{base_url}?{'&'.join(params)}"
+            batch_results = call_gender_api(batch, current_api)
             
-            response = requests.get(url, timeout=15)
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                # Process results
-                for result in data:
-                    first_name = result.get('name', '').lower()
-                    gender = result.get('gender', '')
-                    probability = result.get('probability', 0)
-                    
-                    if first_name in username_to_firstname:
-                        original_username = username_to_firstname[first_name]
-                        
-                        # Only accept high-confidence results
-                        if probability > 0.6:
-                            results[original_username] = gender
-                            print(f"  ✅ {original_username} -> {gender} (prob: {probability:.2f})")
-                        else:
-                            results[original_username] = "unknown"
-                            print(f"  ⚪ {original_username} -> unknown (low confidence: {probability:.2f})")
-                    
-            elif response.status_code == 429:
-                print("  ⚠️  Rate limited! Pausing...")
-                time.sleep(5)
-                continue
+            # Process results based on API type
+            if current_api == "genderize":
+                batch_processed = process_genderize_results(batch_results, username_to_firstname)
+            elif current_api == "gender_api":
+                batch_processed = process_gender_api_results(batch_results, username_to_firstname)
+            elif current_api == "namsor":
+                batch_processed = process_namsor_results(batch_results, username_to_firstname)
             else:
-                print(f"  ❌ API Error: {response.status_code}")
-                # Mark batch as unknown on error
-                for name in batch:
-                    if name in username_to_firstname:
-                        results[username_to_firstname[name]] = "unknown"
-                        
+                batch_processed = {}
+            
+            results.update(batch_processed)
+                
         except Exception as e:
             print(f"  ❌ Exception: {e}")
             # Mark batch as unknown on error
@@ -128,16 +139,169 @@ def batch_gender_detection(usernames, batch_size=10):
                 if name in username_to_firstname:
                     results[username_to_firstname[name]] = "unknown"
         
-        # Be nice to the API
+        # Smart delay based on API
         if i + batch_size < len(first_names):
-            human_delay(action_type="api_call")
+            delay = api_config['rate_limit_delay']
+            time.sleep(delay)
     
     print(f"\n📊 Batch detection complete. Processed {len(results)} users.")
     return results
 
+def call_gender_api(names, api_type):
+    """
+    Make API call to the specified gender detection service
+    Handles rate limiting with exponential backoff
+    """
+    api_config = GENDER_API_CONFIG['apis'][api_type]
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            if api_type == "genderize":
+                return call_genderize_api(names, api_config)
+            elif api_type == "gender_api":
+                return call_gender_api_com(names, api_config)
+            elif api_type == "namsor":
+                return call_namsor_api(names, api_config)
+                
+        except requests.exceptions.RequestException as e:
+            if "429" in str(e) or "rate limit" in str(e).lower():
+                wait_time = (2 ** attempt) * 2  # Exponential backoff: 2s, 4s, 8s
+                print(f"  ⚠️  Rate limited! Waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
+                time.sleep(wait_time)
+                continue
+            else:
+                raise e
+    
+    raise Exception(f"Failed after {max_retries} attempts due to rate limiting")
+
+def call_genderize_api(names, api_config):
+    """Call Genderize.io API"""
+    base_url = api_config['url']
+    params = [f"name[]={name}" for name in names]
+    url = f"{base_url}?{'&'.join(params)}"
+    
+    response = requests.get(url, timeout=15)
+    
+    if response.status_code == 200:
+        return response.json()
+    elif response.status_code == 429:
+        raise requests.exceptions.RequestException("429 Rate Limited")
+    else:
+        response.raise_for_status()
+
+def call_gender_api_com(names, api_config):
+    """Call Gender-API.com API"""
+    if api_config['api_key'] == "YOUR_GENDER_API_KEY_HERE":
+        raise Exception("Please set your Gender-API.com API key in GENDER_API_CONFIG")
+    
+    results = []
+    for name in names:
+        url = f"{api_config['url']}?name={name}&key={api_config['api_key']}"
+        response = requests.get(url, timeout=15)
+        
+        if response.status_code == 200:
+            results.append(response.json())
+        elif response.status_code == 429:
+            raise requests.exceptions.RequestException("429 Rate Limited")
+        else:
+            response.raise_for_status()
+    
+    return results
+
+def call_namsor_api(names, api_config):
+    """Call NamSor API"""
+    if api_config['api_key'] == "YOUR_NAMSOR_API_KEY_HERE":
+        raise Exception("Please set your NamSor API key in GENDER_API_CONFIG")
+    
+    headers = {
+        'X-API-KEY': api_config['api_key'],
+        'Content-Type': 'application/json'
+    }
+    
+    # NamSor expects a specific format
+    data = {
+        "personalNames": [{"firstName": name} for name in names]
+    }
+    
+    response = requests.post(api_config['url'], json=data, headers=headers, timeout=15)
+    
+    if response.status_code == 200:
+        return response.json()
+    elif response.status_code == 429:
+        raise requests.exceptions.RequestException("429 Rate Limited")
+    else:
+        response.raise_for_status()
+
+def process_genderize_results(data, username_to_firstname):
+    """Process results from Genderize.io API"""
+    results = {}
+    
+    for result in data:
+        first_name = result.get('name', '').lower()
+        gender = result.get('gender', '')
+        probability = result.get('probability', 0)
+        
+        if first_name in username_to_firstname:
+            original_username = username_to_firstname[first_name]
+            
+            # Only accept high-confidence results
+            if probability > 0.6:
+                results[original_username] = gender
+                print(f"  ✅ {original_username} -> {gender} (prob: {probability:.2f})")
+            else:
+                results[original_username] = "unknown"
+                print(f"  ⚪ {original_username} -> unknown (low confidence: {probability:.2f})")
+    
+    return results
+
+def process_gender_api_results(data, username_to_firstname):
+    """Process results from Gender-API.com"""
+    results = {}
+    
+    for result in data:
+        first_name = result.get('name', '').lower()
+        gender = result.get('gender', '')
+        accuracy = result.get('accuracy', 0)
+        
+        if first_name in username_to_firstname:
+            original_username = username_to_firstname[first_name]
+            
+            # Gender-API.com returns accuracy as percentage
+            if accuracy > 60:
+                results[original_username] = gender
+                print(f"  ✅ {original_username} -> {gender} (accuracy: {accuracy}%)")
+            else:
+                results[original_username] = "unknown"
+                print(f"  ⚪ {original_username} -> unknown (low accuracy: {accuracy}%)")
+    
+    return results
+
+def process_namsor_results(data, username_to_firstname):
+    """Process results from NamSor API"""
+    results = {}
+    
+    for result in data.get('personalNames', []):
+        first_name = result.get('firstName', '').lower()
+        gender = result.get('likelyGender', '')
+        score = result.get('score', 0)
+        
+        if first_name in username_to_firstname:
+            original_username = username_to_firstname[first_name]
+            
+            # NamSor uses a different scoring system
+            if abs(score) > 0.6:
+                results[original_username] = gender.lower()
+                print(f"  ✅ {original_username} -> {gender.lower()} (score: {score:.2f})")
+            else:
+                results[original_username] = "unknown"
+                print(f"  ⚪ {original_username} -> unknown (low score: {score:.2f})")
+    
+    return results
+
 def filter_female_users(usernames, max_to_check=40, max_females=10):
     """
-    Filter a list of usernames to find female users using batch API calls
+    Filter a list of usernames to find female users using the new multi-API system
     Stops when max_females found or all usernames checked
     Skips already processed profiles
     """
@@ -157,80 +321,21 @@ def filter_female_users(usernames, max_to_check=40, max_females=10):
     # Limit the usernames to check
     usernames_to_check = unprocessed_usernames[:max_to_check]
     
-    # Extract first names and create mapping (same as batch_gender_detection)
-    username_to_firstname = {}
-    first_names = []
+    # Use the new batch_gender_detection function which handles multiple APIs
+    gender_results = batch_gender_detection(usernames_to_check)
     
-    for username in usernames_to_check:
-        first_name = extract_first_name(username)
-        first_names.append(first_name)
-        username_to_firstname[first_name] = username
-    
-    print(f"📋 Extracted first names: {first_names}")
-    
-    # Process in batches and STOP when max_females found
-    batch_size = 10
+    # Extract female users from the results
     female_users = []
     
-    for i in range(0, len(first_names), batch_size):
-        batch = first_names[i:i+batch_size]
-        batch_usernames = [username_to_firstname[name] for name in batch if name in username_to_firstname]
-        
-        print(f"\n📦 Processing batch {i//batch_size + 1}: {batch}")
-        
-        try:
-            # Build URL with name[] parameters (proven format)
-            base_url = "https://api.genderize.io/"
-            params = [f"name[]={name}" for name in batch]
-            url = f"{base_url}?{'&'.join(params)}"
+    for username, gender in gender_results.items():
+        if gender == "female":
+            female_users.append(username)
+            print(f"🎯 FOUND FEMALE USER #{len(female_users)}: {username}")
             
-            response = requests.get(url, timeout=15)
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                # Process results and collect females
-                for result in data:
-                    first_name = result.get('name', '').lower()
-                    gender = result.get('gender', '')
-                    probability = result.get('probability', 0)
-                    
-                    if first_name in username_to_firstname:
-                        original_username = username_to_firstname[first_name]
-                        
-                        # Only accept high-confidence results
-                        if probability > 0.6:
-                            print(f"  ✅ {original_username} -> {gender} (prob: {probability:.2f})")
-                            
-                            # CHECK FOR FEMALE AND ADD TO LIST
-                            if gender == "female":
-                                female_users.append(original_username)
-                                print(f"🎯 FOUND FEMALE USER #{len(female_users)}: {original_username}")
-                                
-                                # Check if we have enough females
-                                if len(female_users) >= max_females:
-                                    print(f"✅ Reached target of {max_females} female users - stopping search!")
-                                    return female_users
-                                    
-                        else:
-                            print(f"  ⚪ {original_username} -> unknown (low confidence: {probability:.2f})")
-                
-                # Show progress after each batch
-                print(f"  📊 Females found so far: {len(female_users)}")
-                
-            elif response.status_code == 429:
-                print("  ⚠️  Rate limited! Pausing...")
-                time.sleep(5)
-                continue
-            else:
-                print(f"  ❌ API Error: {response.status_code}")
-                
-        except Exception as e:
-            print(f"  ❌ Exception: {e}")
-        
-        # Add delay only if there are more batches to process
-        if i + batch_size < len(first_names):
-            human_delay(action_type="api_call")
+            # Check if we have enough females
+            if len(female_users) >= max_females:
+                print(f"✅ Reached target of {max_females} female users - stopping search!")
+                break
     
     # Return whatever females we found
     print(f"\n📊 Results: Found {len(female_users)} female users in {len(usernames_to_check)} checked users")
@@ -930,6 +1035,39 @@ def continuous_main():
         print(f"❌ Unexpected error: {e}")
         print(f"📊 Runs completed before error: {run_count}")
         raise
+
+def switch_gender_api(api_name):
+    """
+    Switch to a different gender detection API
+    Available options: 'genderize', 'gender_api', 'namsor'
+    """
+    if api_name not in GENDER_API_CONFIG['apis']:
+        print(f"❌ Unknown API: {api_name}")
+        print(f"Available APIs: {list(GENDER_API_CONFIG['apis'].keys())}")
+        return False
+    
+    GENDER_API_CONFIG['current_api'] = api_name
+    print(f"✅ Switched to {api_name} API")
+    return True
+
+def get_api_info():
+    """
+    Get information about the current API configuration
+    """
+    current_api = GENDER_API_CONFIG['current_api']
+    api_config = GENDER_API_CONFIG['apis'][current_api]
+    
+    print(f"\n📊 Current Gender API Configuration:")
+    print(f"  Current API: {current_api}")
+    print(f"  Batch Size: {api_config['batch_size']}")
+    print(f"  Rate Limit Delay: {api_config['rate_limit_delay']}s")
+    print(f"  API Key Required: {api_config['key_required']}")
+    
+    if api_config['key_required']:
+        key_set = api_config['api_key'] != f"YOUR_{current_api.upper()}_API_KEY_HERE"
+        print(f"  API Key Status: {'✅ Set' if key_set else '❌ Not Set'}")
+    
+    return api_config
 
 if __name__ == '__main__':
     continuous_main()
