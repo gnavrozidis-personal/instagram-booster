@@ -496,6 +496,15 @@ def check_private_and_act(driver, user):
     print("⏱️ Waiting for profile page to load...")
     human_delay(action_type="page_load")
     
+    # First check if we're already following this user
+    try:
+        following_button = driver.find_element(By.XPATH, "//div[contains(text(), 'Following')]")
+        print(f"⏭️ Already following {user} - skipping this profile")
+        return
+    except:
+        # Not following, continue with normal processing
+        pass
+    
     # Check if account is private first
     try:
         private = driver.find_element(By.XPATH, "//*[contains(text(), 'This Account is Private')]")
@@ -856,9 +865,71 @@ def main():
             print(f"\n🎉 Completed processing all {len(female_followers)} female users!")
         
     except Exception as e:
-        print(f'Error: {e}')
+        print(f'Error in main execution: {e}')
+        raise  # Re-raise to be caught by continuous loop
     finally:
         driver.quit()
 
+def continuous_main():
+    """
+    Main function that runs continuously until Ctrl+C is pressed
+    """
+    run_count = 0
+    
+    print("🚀 Starting InstaBooster in continuous mode")
+    print("💡 Press Ctrl+C to stop the script")
+    print("=" * 80)
+    
+    try:
+        while True:
+            run_count += 1
+            
+            print(f"\n🔄 === STARTING RUN #{run_count} ===")
+            print(f"⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            try:
+                main()
+                
+                # Successful run completed
+                print(f"\n✅ === RUN #{run_count} COMPLETED SUCCESSFULLY ===")
+                
+                # Wait between runs (human-like delay)
+                wait_time = random.randint(5, 15)  # 5-15 seconds between runs
+                print(f"⏳ Waiting {wait_time} seconds before next run...")
+                print("💡 Press Ctrl+C during this wait to stop the script")
+                
+                time.sleep(wait_time)
+                
+            except KeyboardInterrupt:
+                # User pressed Ctrl+C
+                raise
+                
+            except Exception as e:
+                print(f"\n❌ === RUN #{run_count} FAILED ===")
+                print(f"💥 Error: {e}")
+                
+                # Wait a bit before retrying (shorter delay on error)
+                wait_time = random.randint(5, 15)  # 5-15 seconds on error
+                print(f"⏳ Waiting {wait_time} seconds before retry...")
+                print("💡 Press Ctrl+C during this wait to stop the script")
+                
+                try:
+                    time.sleep(wait_time)
+                except KeyboardInterrupt:
+                    raise
+                
+                continue
+    
+    except KeyboardInterrupt:
+        print(f"\n\n🛑 === SCRIPT STOPPED BY USER ===")
+        print(f"📊 Total runs completed: {run_count}")
+        print("👋 Goodbye!")
+    
+    except Exception as e:
+        print(f"\n\n💥 === FATAL ERROR ===")
+        print(f"❌ Unexpected error: {e}")
+        print(f"📊 Runs completed before error: {run_count}")
+        raise
+
 if __name__ == '__main__':
-    main()
+    continuous_main()
