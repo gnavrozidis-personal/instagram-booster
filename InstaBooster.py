@@ -49,60 +49,120 @@ def human_delay(min_delay=1.0, max_delay=3.0, action_type="general"):
     time.sleep(delay)
     return delay
 
-def detect_gender_free_api(profile_name):
+def extract_first_name(username):
     """
-    Use free gender detection API with Greek context
+    Extract first name from Instagram username
     """
-    try:
-        # Extract first name (assumes format like "maria_k" or "maria k")
-        first_name = profile_name.replace('_', ' ').split()[0]
+    # Remove common username characters and split
+    first_name = username.replace('_', ' ').replace('.', ' ').split()[0].lower()
+    return first_name
+
+def batch_gender_detection(usernames, batch_size=10):
+    """
+    Detect gender for multiple usernames using batch API calls
+    Returns dict mapping username -> gender
+    """
+    print(f"🔍 Starting batch gender detection for {len(usernames)} users...")
+    
+    # Extract first names and create mapping
+    username_to_firstname = {}
+    first_names = []
+    
+    for username in usernames:
+        first_name = extract_first_name(username)
+        first_names.append(first_name)
+        username_to_firstname[first_name] = username
+    
+    print(f"📋 Extracted first names: {first_names}")
+    
+    # Process in batches
+    results = {}
+    
+    for i in range(0, len(first_names), batch_size):
+        batch = first_names[i:i+batch_size]
+        print(f"\n📦 Processing batch {i//batch_size + 1}: {batch}")
         
-        # Use free gender API with Greek context
-        url = f"https://api.genderize.io/?name={first_name}&country_id=GR"
-        response = requests.get(url)
-        data = response.json()
-        
-        if data.get('gender'):
-            probability = data.get('probability', 0)
-            print(f"  Gender API: {first_name} -> {data['gender']} (confidence: {probability:.2f})")
-            if probability > 0.6:  # Reasonable confidence for Greek names
-                return data['gender']
+        try:
+            # Build URL with name[] parameters (proven format)
+            base_url = "https://api.genderize.io/"
+            params = [f"name[]={name}" for name in batch]
+            url = f"{base_url}?{'&'.join(params)}"
+            
+            response = requests.get(url, timeout=15)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Process results
+                for result in data:
+                    first_name = result.get('name', '').lower()
+                    gender = result.get('gender', '')
+                    probability = result.get('probability', 0)
+                    
+                    if first_name in username_to_firstname:
+                        original_username = username_to_firstname[first_name]
+                        
+                        # Only accept high-confidence results
+                        if probability > 0.6:
+                            results[original_username] = gender
+                            print(f"  ✅ {original_username} -> {gender} (prob: {probability:.2f})")
+                        else:
+                            results[original_username] = "unknown"
+                            print(f"  ⚪ {original_username} -> unknown (low confidence: {probability:.2f})")
+                    
+            elif response.status_code == 429:
+                print("  ⚠️  Rate limited! Pausing...")
+                time.sleep(5)
+                continue
             else:
-                return "unknown"
-        return "unknown"
+                print(f"  ❌ API Error: {response.status_code}")
+                # Mark batch as unknown on error
+                for name in batch:
+                    if name in username_to_firstname:
+                        results[username_to_firstname[name]] = "unknown"
+                        
+        except Exception as e:
+            print(f"  ❌ Exception: {e}")
+            # Mark batch as unknown on error
+            for name in batch:
+                if name in username_to_firstname:
+                    results[username_to_firstname[name]] = "unknown"
         
-    except Exception as e:
-        print(f"Error with free API: {e}")
-        return "unknown"
+        # Be nice to the API
+        if i + batch_size < len(first_names):
+            human_delay(action_type="api_call")
+    
+    print(f"\n📊 Batch detection complete. Processed {len(results)} users.")
+    return results
 
 def filter_female_users(usernames, max_to_check=10):
     """
-    Filter a list of usernames to find female users - stops at first female found
+    Filter a list of usernames to find female users using batch API calls
+    Stops at first female found for efficiency
     """
-    print(f"\n🔍 Checking gender - will stop at first female user found...")
+    print(f"\n🔍 Starting efficient batch gender detection...")
+    print(f"Will check up to {max_to_check} users and stop at first female found")
+    
+    # Limit the usernames to check
+    usernames_to_check = usernames[:max_to_check]
+    
+    # Use batch detection for efficiency
+    gender_results = batch_gender_detection(usernames_to_check, batch_size=10)
+    
+    # Look for the first female user
     female_users = []
-    checked = 0
+    for username in usernames_to_check:  # Preserve order
+        if username in gender_results:
+            gender = gender_results[username]
+            if gender == "female":
+                female_users.append(username)
+                print(f"🎯 FOUND FEMALE USER: {username}")
+                print(f"✅ Stopping search at first female user!")
+                break  # Stop immediately when first female is found
+            else:
+                print(f"⚪ {username} -> {gender}")
     
-    for username in usernames:
-        if checked >= max_to_check:
-            break
-            
-        print(f"\nChecking user {checked + 1}: {username}")
-        gender = detect_gender_free_api(username)
-        
-        if gender == "female":
-            female_users.append(username)
-            print(f"  ✓ Female user found: {username}")
-            print(f"  🎯 Stopping search - found first female user!")
-            break  # Stop immediately when first female is found
-        else:
-            print(f"  ⚪ {username} -> {gender}")
-            
-        checked += 1
-        # Be nice to the free API with randomized delays
-        human_delay(action_type="api_call")
-    
-    print(f"\n📊 Results: Found {len(female_users)} female users out of {checked} checked")
+    print(f"\n📊 Results: Found {len(female_users)} female users")
     return female_users
 
 def get_random_follower(driver, user=None, my_username=None):
