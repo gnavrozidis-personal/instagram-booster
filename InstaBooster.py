@@ -139,12 +139,23 @@ def filter_female_users(usernames, max_to_check=40, max_females=10):
     """
     Filter a list of usernames to find female users using batch API calls
     Stops when max_females found or all usernames checked
+    Skips already processed profiles
     """
     print(f"\n🔍 Starting efficient batch gender detection...")
     print(f"Will check up to {max_to_check} users and stop when {max_females} female users found")
     
+    # Load processed profiles to avoid duplicates
+    processed_profiles = load_processed_profiles()
+    
+    # Filter out already processed users
+    unprocessed_usernames = filter_unprocessed_users(usernames, processed_profiles)
+    
+    if not unprocessed_usernames:
+        print("❌ All available users have already been processed!")
+        return []
+    
     # Limit the usernames to check
-    usernames_to_check = usernames[:max_to_check]
+    usernames_to_check = unprocessed_usernames[:max_to_check]
     
     # Extract first names and create mapping (same as batch_gender_detection)
     username_to_firstname = {}
@@ -644,6 +655,65 @@ def try_follow_button(driver, user):
     
     return follow_clicked
 
+def load_processed_profiles():
+    """
+    Load the list of previously processed profiles from processed.json
+    """
+    processed_file = "processed.json"
+    
+    if os.path.exists(processed_file):
+        try:
+            with open(processed_file, 'r') as f:
+                data = json.load(f)
+                processed_profiles = set(data.get('processed_profiles', []))
+                print(f"📋 Loaded {len(processed_profiles)} previously processed profiles")
+                return processed_profiles
+        except Exception as e:
+            print(f"⚠️ Error reading processed.json: {e}")
+            return set()
+    else:
+        print("📋 No processed.json found - starting fresh")
+        return set()
+
+def save_processed_profile(username):
+    """
+    Add a profile to the processed list and save to processed.json
+    """
+    processed_file = "processed.json"
+    
+    # Load existing data
+    processed_profiles = load_processed_profiles()
+    
+    # Add new profile
+    processed_profiles.add(username)
+    
+    # Save back to file
+    data = {
+        'processed_profiles': list(processed_profiles),
+        'last_updated': time.time(),
+        'total_processed': len(processed_profiles)
+    }
+    
+    try:
+        with open(processed_file, 'w') as f:
+            json.dump(data, f, indent=2)
+        print(f"💾 Saved {username} to processed profiles (total: {len(processed_profiles)})")
+    except Exception as e:
+        print(f"❌ Error saving to processed.json: {e}")
+
+def filter_unprocessed_users(usernames, processed_profiles):
+    """
+    Filter out users that have already been processed
+    """
+    unprocessed = [username for username in usernames if username not in processed_profiles]
+    
+    filtered_count = len(usernames) - len(unprocessed)
+    if filtered_count > 0:
+        print(f"🚫 Filtered out {filtered_count} already processed users")
+        print(f"📊 Remaining unprocessed users: {len(unprocessed)}")
+    
+    return unprocessed
+
 def main():
     chrome_options = Options()
     chrome_options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
@@ -710,7 +780,13 @@ def main():
             
             # Step 4: Interact with the fallback user
             print(f"=== Step 4: Interacting with {follower2} (fallback) ===")
-            check_private_and_act(driver, follower2)
+            try:
+                check_private_and_act(driver, follower2)
+                save_processed_profile(follower2)
+                print(f"✅ Successfully processed fallback user: {follower2}")
+            except Exception as e:
+                print(f"❌ Error processing fallback user ({follower2}): {e}")
+                save_processed_profile(follower2)  # Still save as processed
         else:
             print(f"✨ Found {len(female_followers)} female users: {female_followers}")
             
@@ -725,6 +801,9 @@ def main():
                     check_private_and_act(driver, female_user)
                     print(f"✅ Successfully processed female user {i}: {female_user}")
                     
+                    # Save this user as processed
+                    save_processed_profile(female_user)
+                    
                     # Add delay between users to appear more human
                     if i < len(female_followers):  # Don't delay after the last user
                         print(f"⏱️ Waiting before processing next female user...")
@@ -732,6 +811,8 @@ def main():
                         
                 except Exception as e:
                     print(f"❌ Error processing female user {i} ({female_user}): {e}")
+                    # Still save as processed even if interaction failed (to avoid retrying)
+                    save_processed_profile(female_user)
                     # Continue with next user even if one fails
                     continue
             
