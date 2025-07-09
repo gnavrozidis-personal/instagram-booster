@@ -135,13 +135,13 @@ def batch_gender_detection(usernames, batch_size=10):
     print(f"\n📊 Batch detection complete. Processed {len(results)} users.")
     return results
 
-def filter_female_users(usernames, max_to_check=10):
+def filter_female_users(usernames, max_to_check=40, max_females=10):
     """
     Filter a list of usernames to find female users using batch API calls
-    Stops IMMEDIATELY when first female is found in any batch
+    Stops when max_females found or all usernames checked
     """
     print(f"\n🔍 Starting efficient batch gender detection...")
-    print(f"Will check up to {max_to_check} users and stop at first female found")
+    print(f"Will check up to {max_to_check} users and stop when {max_females} female users found")
     
     # Limit the usernames to check
     usernames_to_check = usernames[:max_to_check]
@@ -157,8 +157,9 @@ def filter_female_users(usernames, max_to_check=10):
     
     print(f"📋 Extracted first names: {first_names}")
     
-    # Process in batches and STOP at first female found
+    # Process in batches and STOP when max_females found
     batch_size = 10
+    female_users = []
     
     for i in range(0, len(first_names), batch_size):
         batch = first_names[i:i+batch_size]
@@ -177,7 +178,7 @@ def filter_female_users(usernames, max_to_check=10):
             if response.status_code == 200:
                 data = response.json()
                 
-                # Process results and look for first female immediately
+                # Process results and collect females
                 for result in data:
                     first_name = result.get('name', '').lower()
                     gender = result.get('gender', '')
@@ -190,17 +191,21 @@ def filter_female_users(usernames, max_to_check=10):
                         if probability > 0.6:
                             print(f"  ✅ {original_username} -> {gender} (prob: {probability:.2f})")
                             
-                            # CHECK FOR FEMALE IMMEDIATELY
+                            # CHECK FOR FEMALE AND ADD TO LIST
                             if gender == "female":
-                                print(f"🎯 FOUND FEMALE USER: {original_username}")
-                                print(f"✅ Stopping search immediately - no more API calls needed!")
-                                return [original_username]
+                                female_users.append(original_username)
+                                print(f"🎯 FOUND FEMALE USER #{len(female_users)}: {original_username}")
                                 
+                                # Check if we have enough females
+                                if len(female_users) >= max_females:
+                                    print(f"✅ Reached target of {max_females} female users - stopping search!")
+                                    return female_users
+                                    
                         else:
                             print(f"  ⚪ {original_username} -> unknown (low confidence: {probability:.2f})")
                 
-                # No female found in this batch, continue to next batch
-                print(f"  ⚪ No female users found in this batch")
+                # Show progress after each batch
+                print(f"  📊 Females found so far: {len(female_users)}")
                 
             elif response.status_code == 429:
                 print("  ⚠️  Rate limited! Pausing...")
@@ -216,9 +221,9 @@ def filter_female_users(usernames, max_to_check=10):
         if i + batch_size < len(first_names):
             human_delay(action_type="api_call")
     
-    # No female users found in any batch
-    print(f"\n📊 Results: No female users found in {len(usernames_to_check)} checked users")
-    return []
+    # Return whatever females we found
+    print(f"\n📊 Results: Found {len(female_users)} female users in {len(usernames_to_check)} checked users")
+    return female_users
 
 def get_random_follower(driver, user=None, my_username=None):
     # Define cache file path - use specific naming for clarity
@@ -693,22 +698,44 @@ def main():
         
         # Step 3: Filter for female users
         print(f"=== Step 3: Finding female users among {follower1}'s followers ===")
-        female_followers = filter_female_users(followers_list, max_to_check=40)
+        female_followers = filter_female_users(followers_list, max_to_check=40, max_females=10)
         
         if not female_followers:
             print("❌ No female users found in the checked followers.")
             print("🔄 Falling back to random follower selection...")
             follower2 = random.choice(followers_list)
+            
+            # Random delay before final interaction
+            human_delay(action_type="navigation")
+            
+            # Step 4: Interact with the fallback user
+            print(f"=== Step 4: Interacting with {follower2} (fallback) ===")
+            check_private_and_act(driver, follower2)
         else:
-            follower2 = female_followers[0]  # Only one female user since we stop at first
-            print(f"✨ Selected female follower: {follower2}")
-        
-        # Random delay before final interaction
-        human_delay(action_type="navigation")
-        
-        # Step 4: Interact with the final selected user
-        print(f"=== Step 4: Interacting with {follower2} ===")
-        check_private_and_act(driver, follower2)
+            print(f"✨ Found {len(female_followers)} female users: {female_followers}")
+            
+            # Step 4: Interact with each female user
+            for i, female_user in enumerate(female_followers, 1):
+                print(f"\n=== Step 4.{i}: Interacting with female user {i}/{len(female_followers)}: {female_user} ===")
+                
+                # Random delay before each interaction
+                human_delay(action_type="navigation")
+                
+                try:
+                    check_private_and_act(driver, female_user)
+                    print(f"✅ Successfully processed female user {i}: {female_user}")
+                    
+                    # Add delay between users to appear more human
+                    if i < len(female_followers):  # Don't delay after the last user
+                        print(f"⏱️ Waiting before processing next female user...")
+                        human_delay(min_delay=3.0, max_delay=6.0, action_type="general")
+                        
+                except Exception as e:
+                    print(f"❌ Error processing female user {i} ({female_user}): {e}")
+                    # Continue with next user even if one fails
+                    continue
+            
+            print(f"\n🎉 Completed processing all {len(female_followers)} female users!")
         
     except Exception as e:
         print(f'Error: {e}')
