@@ -714,28 +714,65 @@ def filter_unprocessed_users(usernames, processed_profiles):
     
     return unprocessed
 
+def get_available_follower_caches():
+    """
+    Get list of available user follower cache files
+    Returns list of usernames that have follower caches
+    """
+    cache_files = []
+    
+    # Look for all *_followers.json files (excluding my_followers.json)
+    for filename in os.listdir('.'):
+        if filename.endswith('_followers.json') and filename != 'my_followers.json':
+            # Extract username from filename
+            username = filename.replace('_followers.json', '')
+            cache_files.append(username)
+    
+    print(f"📁 Found {len(cache_files)} existing follower cache files")
+    if cache_files:
+        print(f"   Available caches: {cache_files[:5]}{'...' if len(cache_files) > 5 else ''}")
+    
+    return cache_files
+
+def select_random_follower_source(driver):
+    """
+    Decide whether to use existing follower caches or fetch from my_followers
+    If 10+ caches exist, randomly pick one. Otherwise use my_followers.
+    """
+    available_caches = get_available_follower_caches()
+    
+    if len(available_caches) >= 10:
+        # Pick random existing cache
+        selected_user = random.choice(available_caches)
+        print(f"🎲 Found {len(available_caches)} follower caches - randomly selected: {selected_user}")
+        return selected_user, f"{selected_user}_followers.json"
+    else:
+        # Use my_followers as usual
+        print(f"📋 Found only {len(available_caches)} caches (need 10+) - using my_followers.json")
+        follower1 = get_random_follower(driver)
+        return follower1, f"{follower1}_followers.json" if follower1 else None
+
 def main():
     chrome_options = Options()
     chrome_options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     try:
-        # Step 1: Get a random follower from YOUR followers (creates/uses my_followers.json)
-        print("=== Step 1: Getting random follower from your followers ===")
-        follower1 = get_random_follower(driver)
+        # Step 1: Smart follower source selection
+        print("=== Step 1: Smart follower source selection ===")
+        follower1, cache_file = select_random_follower_source(driver)
+        
         if not follower1:
             print('No followers found.')
             return
         
-        print(f"Selected follower from your followers: {follower1}")
+        print(f"Selected follower source: {follower1}")
         
         # Random delay between steps to appear more human
         human_delay(action_type="navigation")
         
-        # Step 2: Get followers from the selected follower's account
+        # Step 2: Get followers from the selected source
         print(f"=== Step 2: Getting followers from {follower1}'s account ===")
         
-        # First, get all followers from follower1
-        cache_file = f"{follower1}_followers.json"
         followers_list = []
         
         if os.path.exists(cache_file):
